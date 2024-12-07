@@ -1,0 +1,2 @@
+In this file - /Users/nathanielmasfen-yan/.pyenv/versions/3.9.9/lib/python3.9/site-packages/gin/tf/__init__.py, we removed the line from gin.tf.utils import GinConfigSaverHook
+as our tensorflow no longer comes with the estimator

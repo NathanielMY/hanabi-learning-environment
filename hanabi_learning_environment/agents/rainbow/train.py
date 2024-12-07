@@ -77,9 +77,32 @@ def launch_experiment():
   run_experiment.load_gin_configs(FLAGS.gin_files, FLAGS.gin_bindings)
   experiment_logger = logger.Logger('{}/logs'.format(FLAGS.base_dir))
 
+  print("got here")
   environment = run_experiment.create_environment()
   obs_stacker = run_experiment.create_obs_stacker(environment)
   agent = run_experiment.create_agent(environment, obs_stacker)
+
+  # FLAG - # Warm-up phase to populate replay memory
+  print("Starting warm-up phase to populate replay memory...")
+  for _ in range(agent.min_replay_history):
+      observation = environment.reset()
+      done = False
+      while not done:
+          # Take random actions to populate replay memory
+          legal_actions = environment.legal_moves()
+          action = environment.random_action()  # Replace with proper random action logic if needed
+          next_observation, reward, done, _ = environment.step(action)
+
+          # Add the transition to replay memory
+          agent._replay.memory._add(observation, action, reward, done, legal_actions)
+
+          # Update observation
+          observation = next_observation
+
+  print(f"Warm-up phase completed. Replay memory populated with {agent.min_replay_history} transitions.")
+
+  agent._replay.transition = agent._replay.get_transition() 
+
 
   checkpoint_dir = '{}/checkpoints'.format(FLAGS.base_dir)
   start_iteration, experiment_checkpointer = (

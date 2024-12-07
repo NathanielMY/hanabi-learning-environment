@@ -32,8 +32,8 @@ import numpy as np
 import prioritized_replay_memory
 import tensorflow as tf
 
-
-slim = tf.contrib.slim
+import tf_slim as slim
+import logging
 
 
 @gin.configurable
@@ -138,8 +138,8 @@ class RainbowAgent(dqn_agent.DQNAgent):
         epsilon_decay_period=epsilon_decay_period,
         graph_template=graph_template,
         tf_device=tf_device)
-    tf.logging.info('\t learning_rate: %f', learning_rate)
-    tf.logging.info('\t optimizer_epsilon: %f', optimizer_epsilon)
+    logging.info('\t learning_rate: %f', learning_rate)
+    logging.info('\t optimizer_epsilon: %f', optimizer_epsilon)
 
   def _build_replay_memory(self, use_staging):
     """Creates the replay memory used by the agent.

@@ -39,6 +39,7 @@ import pickle
 import gin.tf
 import numpy as np
 import tensorflow as tf
+from tensorflow import keras
 
 
 # This constant determines how many iterations a checkpoint is kept for.
@@ -256,19 +257,33 @@ class OutOfGraphReplayMemory(object):
     indices = []
     attempt_count = 0
     while len(indices) < batch_size and attempt_count < MAX_SAMPLE_ATTEMPTS:
-      attempt_count += 1
-      # index references the state and index + 1 points to next_state
-      if self.is_full():
-        index = np.random.randint(0, self._replay_capacity)
-      else:
-        # Can't start at 0 because the buffer is not yet circular
-        index = np.random.randint(self._stack_size - 1, self.cursor() - 1)
-      if self.is_valid_transition(index):
-        indices.append(index)
+        attempt_count += 1
+
+        # Determine valid range for sampling indices
+        if self.is_full():
+            low, high = 0, self._replay_capacity
+        else:
+            low, high = self._stack_size - 1, self.cursor() - 1
+
+        # Skip invalid ranges
+        if high <= low:
+            # invalid range: low={low}, high={high}")
+            #just return nothing for now
+            return None
+
+        # Sample an index
+        index = np.random.randint(low, high)
+
+        # Check if the sampled index is valid
+        if self.is_valid_transition(index):
+            indices.append(index)
+
+    # Check if we successfully sampled enough indices
     if len(indices) != batch_size:
-      raise Exception('I tried %i times but only sampled %i valid transitions' %
-                      (MAX_SAMPLE_ATTEMPTS, len(indices)))
+        raise Exception(f"I tried {MAX_SAMPLE_ATTEMPTS} times but only sampled {len(indices)} valid transitions out of {batch_size}. Check replay memory population.")
+
     return indices
+
 
   def sample_transition_batch(self, batch_size=None, indices=None):
     """Returns a batch of transitions.
@@ -298,6 +313,10 @@ class OutOfGraphReplayMemory(object):
                                                                 self.add_count))
     if indices is None:
       indices = self.sample_index_batch(batch_size)
+
+    if indices is None:
+      return
+
     assert len(indices) == batch_size
 
     action_batch = self.actions[indices]
@@ -454,7 +473,7 @@ class WrappedReplayMemory(object):
                stack_size,
                use_staging=True,
                replay_capacity=1000000,
-               batch_size=32,
+               batch_size=1, #FLAG - change back to 32 eventually
                update_horizon=1,
                gamma=1.0,
                wrapped_memory=None):
@@ -493,34 +512,40 @@ class WrappedReplayMemory(object):
       self.memory = OutOfGraphReplayMemory(
           num_actions, observation_size, stack_size,
           replay_capacity, batch_size, update_horizon, gamma)
+      
+    print("got here 1.1")
 
     with tf.name_scope('replay'):
       with tf.name_scope('add_placeholders'):
-        self.add_obs_ph = tf.placeholder(
-            tf.uint8, [observation_size], name='add_obs_ph')
-        self.add_action_ph = tf.placeholder(tf.int32, [], name='add_action_ph')
-        self.add_reward_ph = tf.placeholder(
-            tf.float32, [], name='add_reward_ph')
-        self.add_terminal_ph = tf.placeholder(
-            tf.uint8, [], name='add_terminal_ph')
-        self.add_legal_actions_ph = tf.placeholder(
-            tf.float32, [num_actions], name='add_legal_actions_ph')
+        self.add_obs_ph = tf.zeros(
+          [observation_size], dtype = tf.uint8, name='add_obs_ph')
+        self.add_action_ph = tf.zeros([], dtype = tf.int32, name='add_action_ph')
+        self.add_reward_ph = tf.zeros(
+            [], dtype = tf.float32, name='add_reward_ph')
+        self.add_terminal_ph = tf.zeros(
+           [], dtype = tf.uint8, name='add_terminal_ph')
+        self.add_legal_actions_ph = tf.zeros(
+            [num_actions], dtype = tf.float32,  name='add_legal_actions_ph')
 
       add_transition_ph = [
           self.add_obs_ph, self.add_action_ph, self.add_reward_ph,
           self.add_terminal_ph, self.add_legal_actions_ph
       ]
-
+      print("got here 1.2")
       with tf.device('/cpu:*'):
-        self.add_transition_op = tf.py_func(
-            self.memory.add, add_transition_ph, [], name='replay_add_py_func')
-
-        self.transition = tf.py_func(
-            self.memory.sample_transition_batch, [],
-            [tf.uint8, tf.int32, tf.float32, tf.uint8, tf.uint8, tf.int32,
-             tf.float32],
-            name='replay_sample_py_func')
-
+        #changed from py_func
+        self.add_transition_op = tf.numpy_function(
+          func=self.memory.add,  # The replay memory add function
+          inp=add_transition_ph,  # Inputs for adding transitions
+          Tout=[]  # No output is expected from add
+        )
+        print("got here 1.23")
+        self.transition = tf.numpy_function(
+            func=self.memory.sample_transition_batch, 
+            inp=[],  # No additional inputs required
+            Tout=[tf.uint8, tf.int32, tf.float32, tf.uint8, tf.uint8, tf.int32, tf.float32]
+        )
+        print("got here 1.25")
         if use_staging:
           # To hide the py_func latency use a staging area to pre-fetch the next
           # batch of transitions.
@@ -535,6 +560,8 @@ class WrappedReplayMemory(object):
           terminals.set_shape([batch_size])
           indices.set_shape([batch_size])
           next_legal_actions.set_shape([batch_size, num_actions])
+
+          print("got here 1.3")
 
           # Create the staging area in CPU.
           prefetch_area = tf.contrib.staging.StagingArea(

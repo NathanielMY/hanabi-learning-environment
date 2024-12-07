@@ -33,9 +33,10 @@ import gin.tf
 import numpy as np
 import replay_memory
 import tensorflow as tf
+from tensorflow.keras import layers
+import tf_slim as slim
+import logging
 
-
-slim = tf.contrib.slim
 
 Transition = collections.namedtuple(
     'Transition', ['reward', 'observation', 'legal_actions', 'action', 'begin'])
@@ -85,129 +86,137 @@ def dqn_template(state, num_actions, layer_size=512, num_layers=1):
   return net
 
 
+
+class DQNModel(tf.keras.Model):
+    def __init__(self, num_actions, layer_size=512, num_layers=1):
+        """
+        Creates a DQN network mapping states to Q-values.
+
+        Args:
+            num_actions: int, number of actions that the RL agent can take.
+            layer_size: int, number of hidden units per layer.
+            num_layers: int, number of hidden layers.
+        """
+        super(DQNModel, self).__init__()
+        self.num_actions = num_actions
+        self.hidden_layers = [layers.Dense(layer_size, activation='relu') for _ in range(num_layers)]
+        self.output_layer = layers.Dense(num_actions, activation=None)
+
+    def call(self, inputs):
+        """
+        Forward pass through the network.
+
+        Args:
+            inputs: The state input tensor.
+
+        Returns:
+            Q-values for each action.
+        """
+        x = tf.cast(inputs, tf.float32)
+        x = tf.squeeze(x, axis=2)
+        for hidden_layer in self.hidden_layers:
+            x = hidden_layer(x)
+        return self.output_layer(x)
+
+
+
 @gin.configurable
 class DQNAgent(object):
   """A compact implementation of the multiplayer DQN agent."""
 
+  #FLAG - changed almost this entire method
   @gin.configurable
   def __init__(self,
-               num_actions=None,
-               observation_size=None,
-               num_players=None,
-               gamma=0.99,
-               update_horizon=1,
-               min_replay_history=500,
-               update_period=4,
-               stack_size=1,
-               target_update_period=500,
-               epsilon_fn=linearly_decaying_epsilon,
-               epsilon_train=0.02,
-               epsilon_eval=0.001,
-               epsilon_decay_period=1000,
-               graph_template=dqn_template,
-               tf_device='/cpu:*',
-               use_staging=True,
-               optimizer=tf.train.RMSPropOptimizer(
-                   learning_rate=.0025,
-                   decay=0.95,
-                   momentum=0.0,
-                   epsilon=1e-6,
-                   centered=True)):
-    """Initializes the agent and constructs its graph.
+                 num_actions=None,
+                 observation_size=None,
+                 num_players=None,
+                 gamma=0.99,
+                 update_horizon=1,
+                 min_replay_history=500,
+                 update_period=4,
+                 stack_size=1,
+                 target_update_period=500,
+                 epsilon_fn=linearly_decaying_epsilon,
+                 epsilon_train=0.02,
+                 epsilon_eval=0.001,
+                 epsilon_decay_period=1000,
+                 tf_device='/cpu:*',
+                 use_staging=True,
+                 optimizer=tf.keras.optimizers.RMSprop(
+                     learning_rate=0.0025,
+                     decay=0.95,
+                     momentum=0.0,
+                     epsilon=1e-6,
+                     centered=True)):
+        """Initializes the agent and constructs its components."""
 
-    Args:
-      num_actions: int, number of actions the agent can take at any state.
-      observation_size: int, size of observation vector.
-      num_players: int, number of players playing this game.
-      gamma: float, discount factor as commonly used in the RL literature.
-      update_horizon: int, horizon at which updates are performed, the 'n' in
-        n-step update.
-      min_replay_history: int, number of stored transitions before training.
-      update_period: int, period between DQN updates.
-      stack_size: int, number of observations to use as state.
-      target_update_period: Update period for the target network.
-      epsilon_fn: Function expecting 4 parameters: (decay_period, step,
-        warmup_steps, epsilon), and which returns the epsilon value used for
-        exploration during training.
-      epsilon_train: float, final epsilon for training.
-      epsilon_eval: float, epsilon during evaluation.
-      epsilon_decay_period: int, number of steps for epsilon to decay.
-      graph_template: function for building the neural network graph.
-      tf_device: str, Tensorflow device on which to run computations.
-      use_staging: bool, when True use a staging area to prefetch the next
-        sampling batch.
-      optimizer: Optimizer instance used for learning.
-    """
+        # Logging agent parameters
+        logging.info('Creating %s agent with the following parameters:',
+                     self.__class__.__name__)
+        for key, value in locals().items():
+            if key != "self" and not callable(value):
+                logging.info(f"\t {key}: {value}")
 
-    tf.logging.info('Creating %s agent with the following parameters:',
-                    self.__class__.__name__)
-    tf.logging.info('\t gamma: %f', gamma)
-    tf.logging.info('\t update_horizon: %f', update_horizon)
-    tf.logging.info('\t min_replay_history: %d', min_replay_history)
-    tf.logging.info('\t update_period: %d', update_period)
-    tf.logging.info('\t target_update_period: %d', target_update_period)
-    tf.logging.info('\t epsilon_train: %f', epsilon_train)
-    tf.logging.info('\t epsilon_eval: %f', epsilon_eval)
-    tf.logging.info('\t epsilon_decay_period: %d', epsilon_decay_period)
-    tf.logging.info('\t tf_device: %s', tf_device)
-    tf.logging.info('\t use_staging: %s', use_staging)
-    tf.logging.info('\t optimizer: %s', optimizer)
+        # Global variables
+        self.num_actions = num_actions
+        self.observation_size = observation_size
+        self.num_players = num_players
+        self.gamma = gamma
+        self.update_horizon = update_horizon
+        self.cumulative_gamma = math.pow(gamma, update_horizon)
+        self.min_replay_history = min_replay_history
+        self.target_update_period = target_update_period
+        self.epsilon_fn = epsilon_fn
+        self.epsilon_train = epsilon_train
+        self.epsilon_eval = epsilon_eval
+        self.epsilon_decay_period = epsilon_decay_period
+        self.update_period = update_period
+        self.eval_mode = False
+        self.training_steps = 0
+        self.batch_staged = False
+        self.optimizer = optimizer
 
-    # Global variables.
-    self.num_actions = num_actions
-    self.observation_size = observation_size
-    self.num_players = num_players
-    self.gamma = gamma
-    self.update_horizon = update_horizon
-    self.cumulative_gamma = math.pow(gamma, update_horizon)
-    self.min_replay_history = min_replay_history
-    self.target_update_period = target_update_period
-    self.epsilon_fn = epsilon_fn
-    self.epsilon_train = epsilon_train
-    self.epsilon_eval = epsilon_eval
-    self.epsilon_decay_period = epsilon_decay_period
-    self.update_period = update_period
-    self.eval_mode = False
-    self.training_steps = 0
-    self.batch_staged = False
-    self.optimizer = optimizer
+        # TensorFlow models and placeholders
+        with tf.device(tf_device):
+            # Define model and input shapes
+            self.states_shape = (None, observation_size, stack_size)
+            self.state_ph = tf.keras.Input(shape=(observation_size, stack_size), dtype=tf.uint8, name="state_ph")
+            self.legal_actions_ph = tf.keras.Input(shape=(num_actions,), dtype=tf.float32, name="legal_actions_ph")
 
-    with tf.device(tf_device):
-      # Calling online_convnet will generate a new graph as defined in
-      # graph_template using whatever input is passed, but will always share
-      # the same weights.
-      online_convnet = tf.make_template('Online', graph_template)
-      target_convnet = tf.make_template('Target', graph_template)
-      # The state of the agent. The last axis is the number of past observations
-      # that make up the state.
-      states_shape = (1, observation_size, stack_size)
-      self.state = np.zeros(states_shape)
-      self.state_ph = tf.placeholder(tf.uint8, states_shape, name='state_ph')
-      self.legal_actions_ph = tf.placeholder(tf.float32,
-                                             [self.num_actions],
-                                             name='legal_actions_ph')
-      self._q = online_convnet(
-          state=self.state_ph, num_actions=self.num_actions)
-      self._replay = self._build_replay_memory(use_staging)
-      self._replay_qs = online_convnet(self._replay.states, self.num_actions)
-      self._replay_next_qt = target_convnet(self._replay.next_states,
-                                            self.num_actions)
-      self._train_op = self._build_train_op()
-      self._sync_qt_ops = self._build_sync_op()
+            # Define online and target models
+            self.online_convnet = DQNModel(num_actions=num_actions, layer_size=512, num_layers=1)
+            self.target_convnet = DQNModel(num_actions=num_actions, layer_size=512, num_layers=1)
 
-      self._q_argmax = tf.argmax(self._q + self.legal_actions_ph, axis=1)[0]
+            # Forward passes
+            self._q = self.online_convnet(self.state_ph)
+            print("got here 1")
+            self._replay = self._build_replay_memory(use_staging)
+            print("got here 1.5")
+            self._replay_qs = self.online_convnet(self._replay.states)
+            self._replay_next_qt = self.target_convnet(self._replay.next_states)
 
-    # Set up a session and initialize variables.
-    self._sess = tf.Session(
-        '', config=tf.ConfigProto(allow_soft_placement=True))
-    self._init_op = tf.global_variables_initializer()
-    self._sess.run(self._init_op)
+            # Training operations
+            self._train_op = self._build_train_op()
+            self._sync_qt_ops = self._build_sync_op()
 
-    self._saver = tf.train.Saver(max_to_keep=3)
+            # Action selection
+            self._q_argmax = tf.argmax(self._q + self.legal_actions_ph, axis=1)[0]
+            print("got here 2")
 
-    # This keeps tracks of the observed transitions during play, for each
-    # player.
-    self.transitions = [[] for _ in range(num_players)]
+        # Set up TensorFlow session
+        print("got here 3")
+        self._sess = tf.compat.v1.Session(config=tf.compat.v1.ConfigProto(allow_soft_placement=True))
+        self._init_op = tf.compat.v1.global_variables_initializer()
+        self._sess.run(self._init_op)
+
+        # Saver for checkpoints
+        self._saver = tf.compat.v1.train.Saver(max_to_keep=3)
+
+        # Observed transitions buffer
+        self.transitions = [[] for _ in range(num_players)]
+        print("got here 4")
+
+    # Define other methods (_build_replay_memory, _build_train_op, _build_sync_op) as required.
 
   def _build_replay_memory(self, use_staging):
     """Creates the replay memory used by the agent.
@@ -221,7 +230,7 @@ class DQNAgent(object):
     return replay_memory.WrappedReplayMemory(
         num_actions=self.num_actions,
         observation_size=self.observation_size,
-        batch_size=32,
+        batch_size=1, #FLAG - change back to 32 once fixed bugs
         stack_size=1,
         use_staging=use_staging,
         update_horizon=self.update_horizon,
@@ -382,6 +391,8 @@ class DQNAgent(object):
       # buffer.
       self.transitions[player] = []
 
+
+#TO DO - alter this so that during test time it acts in a custom way
   def _select_action(self, observation, legal_actions):
     """Select an action from the set of allowed actions.
 

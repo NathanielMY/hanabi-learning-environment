@@ -161,9 +161,12 @@ def create_agent(environment, obs_stacker, agent_type='DQN'):
     ValueError: if an unknown agent type is requested.
   """
   if agent_type == 'DQN':
-    return dqn_agent.DQNAgent(observation_size=obs_stacker.observation_size(),
+    print("creating agent")
+    agent = dqn_agent.DQNAgent(observation_size=obs_stacker.observation_size(),
                               num_actions=environment.num_moves(),
                               num_players=environment.players)
+    print("created agent")
+    return agent
   elif agent_type == 'Rainbow':
     return rainbow_agent.RainbowAgent(
         observation_size=obs_stacker.observation_size(),
@@ -171,6 +174,20 @@ def create_agent(environment, obs_stacker, agent_type='DQN'):
         num_players=environment.players)
   else:
     raise ValueError('Expected valid agent_type, got {}'.format(agent_type))
+  
+
+def get_transition(self):
+    """Dynamically creates and returns the transition operation."""
+    if self.memory.add_count < self.min_replay_history:
+        raise ValueError(
+            f"Replay memory has insufficient transitions. "
+            f"Required: {self.min_replay_history}, Found: {self.memory.add_count}"
+        )
+    return tf.numpy_function(
+        func=self.memory.sample_transition_batch,
+        inp=[],
+        Tout=[tf.uint8, tf.int32, tf.float32, tf.uint8, tf.uint8, tf.int32, tf.float32]
+    )
 
 
 def initialize_checkpointing(agent, experiment_logger, checkpoint_dir,
