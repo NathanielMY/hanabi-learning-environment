@@ -27,6 +27,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import copy  # For deep copy of the training agent
 import time
 
 from third_party.dopamine import checkpointer
@@ -112,7 +113,7 @@ def load_gin_configs(gin_files, gin_bindings):
 
 
 @gin.configurable
-def create_environment(game_type='Hanabi-Full', num_players=2):
+def create_environment(game_type='Hanabi-Small', num_players=2):
   """Creates the Hanabi environment.
 
   Args:
@@ -472,39 +473,163 @@ def checkpoint_experiment(experiment_checkpointer, agent, experiment_logger,
       experiment_checkpointer.save_checkpoint(iteration, agent_dictionary)
 
 
+# @gin.configurable
+# def run_experiment(agent,
+#                    environment,
+#                    start_iteration,
+#                    obs_stacker,
+#                    experiment_logger,
+#                    experiment_checkpointer,
+#                    checkpoint_dir,
+#                    num_iterations=200,
+#                    training_steps=5000,
+#                    logging_file_prefix='log',
+#                    log_every_n=1,
+#                    checkpoint_every_n=1):
+#   """Runs a full experiment, spread over multiple iterations."""
+#   tf.logging.info('Beginning training...')
+#   if num_iterations <= start_iteration:
+#     tf.logging.warning('num_iterations (%d) < start_iteration(%d)',
+#                        num_iterations, start_iteration)
+#     return
+
+#   for iteration in range(start_iteration, num_iterations):
+#     start_time = time.time()
+#     statistics = run_one_iteration(agent, environment, obs_stacker, iteration,
+#                                    training_steps)
+#     tf.logging.info('Iteration %d took %d seconds', iteration,
+#                     time.time() - start_time)
+#     start_time = time.time()
+#     log_experiment(experiment_logger, iteration, statistics,
+#                    logging_file_prefix, log_every_n)
+#     tf.logging.info('Logging iteration %d took %d seconds', iteration,
+#                     time.time() - start_time)
+#     start_time = time.time()
+#     checkpoint_experiment(experiment_checkpointer, agent, experiment_logger,
+#                           iteration, checkpoint_dir, checkpoint_every_n)
+#     tf.logging.info('Checkpointing iteration %d took %d seconds', iteration,
+#                     time.time() - start_time)
+    
+
+
+
+
+   
+
 @gin.configurable
-def run_experiment(agent,
+def run_experiment(agent_training,
                    environment,
                    start_iteration,
                    obs_stacker,
                    experiment_logger,
                    experiment_checkpointer,
                    checkpoint_dir,
-                   num_iterations=200,
+                   num_iterations=20,
                    training_steps=5000,
                    logging_file_prefix='log',
                    log_every_n=1,
                    checkpoint_every_n=1):
-  """Runs a full experiment, spread over multiple iterations."""
-  tf.logging.info('Beginning training...')
-  if num_iterations <= start_iteration:
-    tf.logging.warning('num_iterations (%d) < start_iteration(%d)',
-                       num_iterations, start_iteration)
-    return
+    """Runs a full experiment, spread over multiple iterations."""
+    tf.logging.info('Beginning training...')
+    if num_iterations <= start_iteration:
+        tf.logging.warning('num_iterations (%d) < start_iteration(%d)',
+                           num_iterations, start_iteration)
+        return
 
-  for iteration in range(start_iteration, num_iterations):
-    start_time = time.time()
-    statistics = run_one_iteration(agent, environment, obs_stacker, iteration,
-                                   training_steps)
-    tf.logging.info('Iteration %d took %d seconds', iteration,
-                    time.time() - start_time)
-    start_time = time.time()
-    log_experiment(experiment_logger, iteration, statistics,
-                   logging_file_prefix, log_every_n)
-    tf.logging.info('Logging iteration %d took %d seconds', iteration,
-                    time.time() - start_time)
-    start_time = time.time()
-    checkpoint_experiment(experiment_checkpointer, agent, experiment_logger,
-                          iteration, checkpoint_dir, checkpoint_every_n)
-    tf.logging.info('Checkpointing iteration %d took %d seconds', iteration,
-                    time.time() - start_time)
+    # Initialize static agent as a deep copy of training agent
+    static_agent = copy.deepcopy(agent_training)
+    update_interval = 5  # Update static agent every 5 seconds
+
+    for iteration in range(start_iteration, num_iterations):
+        start_time = time.time()
+        statistics = iteration_statistics.IterationStatistics()
+
+        # Training phase with self-play
+        agent_training.eval_mode = False
+        step_count, sum_returns, num_episodes = 0, 0, 0
+        while step_count < training_steps:
+            episode_length, episode_return = run_self_play_episode(
+                agent_training, static_agent, environment, obs_stacker)
+            statistics.append({
+                'train_episode_lengths': episode_length,
+                'train_episode_returns': episode_return
+            })
+            step_count += episode_length
+            sum_returns += episode_return
+            num_episodes += 1
+
+            # Update static agent periodically
+            if time.time() - start_time > update_interval:
+                static_agent = copy.deepcopy(agent_training)
+                start_time = time.time()  # Reset the timer
+
+        # Log training statistics
+        average_return = sum_returns / num_episodes
+        statistics.append({'average_train_return': average_return})
+        tf.logging.info(f'Iteration {iteration} - Average Training Return: {average_return}')
+
+        # Evaluation phase
+        eval_episode_data = []
+        agent_training.eval_mode = True
+        for _ in range(50):  # Benchmark over 50 games
+            episode_length, episode_return = run_self_play_episode(
+                agent_training, agent_training, environment, obs_stacker)
+            eval_episode_data.append((episode_length, episode_return))
+
+        eval_episode_length, eval_episode_return = map(np.mean, zip(*eval_episode_data))
+        statistics.append({
+            'eval_episode_lengths': eval_episode_length,
+            'eval_episode_returns': eval_episode_return
+        })
+        tf.logging.info(f'Evaluation - Average Length: {eval_episode_length}, Return: {eval_episode_return}')
+
+        # Save logs and checkpoints
+        log_experiment(experiment_logger, iteration, statistics,
+                       logging_file_prefix, log_every_n)
+        checkpoint_experiment(experiment_checkpointer, agent_training, experiment_logger,
+                              iteration, checkpoint_dir, checkpoint_every_n)
+
+        tf.logging.info(f'Iteration {iteration} completed')
+
+def run_self_play_episode(agent_training, static_agent, environment, obs_stacker):
+    """Runs a single episode of self-play."""
+    obs_stacker.reset_stack()
+    observations = environment.reset()
+    current_player, legal_moves, observation_vector = parse_observations(
+        observations, environment.num_moves(), obs_stacker)
+    
+    action = None
+    is_done = False
+    total_reward = 0
+    step_number = 0
+    has_played = {current_player}
+    reward_since_last_action = np.zeros(environment.players)
+
+    while not is_done:
+        if current_player == 0:
+            # Training agent's turn
+            if action is None:
+                action = agent_training.begin_episode(current_player, legal_moves, observation_vector)
+            else:
+                action = agent_training.step(reward_since_last_action[current_player],
+                                             current_player, legal_moves, observation_vector)
+        else:
+            # Static agent's turn
+            if action is None:
+                action = static_agent.begin_episode(current_player, legal_moves, observation_vector)
+            else:
+                action = static_agent.step(reward_since_last_action[current_player],
+                                           current_player, legal_moves, observation_vector)
+
+        observations, reward, is_done, _ = environment.step(action.item())
+        reward_since_last_action[current_player] += reward
+        total_reward += reward
+        step_number += 1
+
+        if not is_done:
+            current_player, legal_moves, observation_vector = parse_observations(
+                observations, environment.num_moves(), obs_stacker)
+
+    agent_training.end_episode(reward_since_last_action)
+    return step_number, total_reward
+
