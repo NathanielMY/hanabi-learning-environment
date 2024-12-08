@@ -635,7 +635,8 @@ def run_self_play_episode(agent_training, static_agent, environment, obs_stacker
 """
 
 @gin.configurable
-def run_experiment(agent_training,
+def run_experiment(online_agent,
+                   static_agent,
                    environment,
                    start_iteration,
                    obs_stacker,
@@ -655,21 +656,19 @@ def run_experiment(agent_training,
                            num_iterations, start_iteration)
         return
 
-    # Initialize static agent
-    static_agent = create_agent(environment, obs_stacker)
 
     for iteration in range(start_iteration, num_iterations):
         start_time = time.time()
 
         # Train the training agent
-        statistics = run_one_iteration(agent_training, environment, obs_stacker, iteration,
+        statistics = run_one_iteration(online_agent, environment, obs_stacker, iteration,
                                        training_steps)
 
         # Every `static_agent_update_interval` seconds, update the static agent
         if iteration % static_agent_update_interval == 0:
             tf.logging.info('Updating static agent at iteration %d', iteration)
             # Serialize agent_training and load into static_agent
-            agent_training_dictionary = agent_training.bundle_and_checkpoint(checkpoint_dir, iteration)
+            agent_training_dictionary = online_agent.bundle_and_checkpoint(checkpoint_dir, iteration)
             if agent_training_dictionary:
                 static_agent.unbundle(checkpoint_dir, iteration, agent_training_dictionary)
 
@@ -679,7 +678,7 @@ def run_experiment(agent_training,
         # Log and checkpoint
         log_experiment(experiment_logger, iteration, statistics,
                        logging_file_prefix, log_every_n)
-        checkpoint_experiment(experiment_checkpointer, agent_training, experiment_logger,
+        checkpoint_experiment(experiment_checkpointer, online_agent, experiment_logger,
                               iteration, checkpoint_dir, checkpoint_every_n)
 
     # Benchmarking after training
