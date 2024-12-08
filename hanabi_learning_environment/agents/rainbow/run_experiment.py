@@ -514,7 +514,7 @@ def checkpoint_experiment(experiment_checkpointer, agent, experiment_logger,
 
 
 
-   
+"""
 
 @gin.configurable
 def run_experiment(agent_training,
@@ -529,7 +529,7 @@ def run_experiment(agent_training,
                    logging_file_prefix='log',
                    log_every_n=1,
                    checkpoint_every_n=1):
-    """Runs a full experiment, spread over multiple iterations."""
+    #Runs a full experiment, spread over multiple iterations.
     tf.logging.info('Beginning training...')
     if num_iterations <= start_iteration:
         tf.logging.warning('num_iterations (%d) < start_iteration(%d)',
@@ -592,7 +592,7 @@ def run_experiment(agent_training,
         tf.logging.info(f'Iteration {iteration} completed')
 
 def run_self_play_episode(agent_training, static_agent, environment, obs_stacker):
-    """Runs a single episode of self-play."""
+    #Runs a single episode of self-play.
     obs_stacker.reset_stack()
     observations = environment.reset()
     current_player, legal_moves, observation_vector = parse_observations(
@@ -632,4 +632,69 @@ def run_self_play_episode(agent_training, static_agent, environment, obs_stacker
 
     agent_training.end_episode(reward_since_last_action)
     return step_number, total_reward
+"""
+
+@gin.configurable
+def run_experiment(agent_training,
+                   environment,
+                   start_iteration,
+                   obs_stacker,
+                   experiment_logger,
+                   experiment_checkpointer,
+                   checkpoint_dir,
+                   num_iterations=200,
+                   training_steps=5000,
+                   logging_file_prefix='log',
+                   log_every_n=1,
+                   checkpoint_every_n=1,
+                   static_agent_update_interval=5):
+    #"""Runs a full experiment, spread over multiple iterations."""
+    tf.logging.info('Beginning training...')
+    if num_iterations <= start_iteration:
+        tf.logging.warning('num_iterations (%d) < start_iteration(%d)',
+                           num_iterations, start_iteration)
+        return
+
+    # Initialize static agent
+    static_agent = create_agent(environment, obs_stacker)
+
+    for iteration in range(start_iteration, num_iterations):
+        start_time = time.time()
+
+        # Train the training agent
+        statistics = run_one_iteration(agent_training, environment, obs_stacker, iteration,
+                                       training_steps)
+
+        # Every `static_agent_update_interval` seconds, update the static agent
+        if iteration % static_agent_update_interval == 0:
+            tf.logging.info('Updating static agent at iteration %d', iteration)
+            # Serialize agent_training and load into static_agent
+            agent_training_dictionary = agent_training.bundle_and_checkpoint(checkpoint_dir, iteration)
+            if agent_training_dictionary:
+                static_agent.unbundle(checkpoint_dir, iteration, agent_training_dictionary)
+
+        tf.logging.info('Iteration %d took %d seconds', iteration,
+                        time.time() - start_time)
+
+        # Log and checkpoint
+        log_experiment(experiment_logger, iteration, statistics,
+                       logging_file_prefix, log_every_n)
+        checkpoint_experiment(experiment_checkpointer, agent_training, experiment_logger,
+                              iteration, checkpoint_dir, checkpoint_every_n)
+
+    # Benchmarking after training
+    tf.logging.info('Benchmarking the trained agent...')
+    benchmark_agent(static_agent, environment, obs_stacker, num_games=50)
+
+
+def benchmark_agent(agent, environment, obs_stacker, num_games=50):
+    #"""Evaluates the agent by letting it play against itself."""
+    total_rewards = []
+    for game in range(num_games):
+        _, total_reward = run_one_episode(agent, environment, obs_stacker)
+        total_rewards.append(total_reward)
+        tf.logging.info(f'Game {game + 1}: Reward = {total_reward}')
+
+    average_reward = np.mean(total_rewards)
+    tf.logging.info(f'Benchmarking complete. Average reward over {num_games} games: {average_reward}')
 
