@@ -2,13 +2,14 @@ import pickle
 import os
 import matplotlib.pyplot as plt
 
+
 def load_logged_data(log_dir, filename_prefix='log'):
     """Loads logged data from the experiment directory.
-    
+
     Args:
         log_dir: str, path to the directory containing log files.
         filename_prefix: str, prefix used for log files (default is 'log').
-    
+
     Returns:
         A dictionary of all logged statistics.
     """
@@ -21,23 +22,36 @@ def load_logged_data(log_dir, filename_prefix='log'):
                 logged_data.update(data)
     return logged_data
 
-def plot_average_return(logged_data):
-    """Plots average return per iteration.
-    
+def extract_average_return(logged_data):
+    """Extracts average return from logged IterationStatistics objects.
+
     Args:
         logged_data: dict, dictionary containing logged experiment statistics.
+
+    Returns:
+        A tuple (iterations, average_returns) for plotting.
     """
     iterations = []
     average_returns = []
 
-    # Extract average returns from logged data
     for key, stats in logged_data.items():
-        if 'average_return' in stats:
+        # Check if the key corresponds to an iteration (e.g., 'iter0')
+        if key.startswith('iter') and isinstance(stats, dict):
             iteration = int(key.replace('iter', ''))
-            iterations.append(iteration)
-            average_returns.append(stats['average_return'])
+            if 'average_return' in stats:
+                iterations.append(iteration)
+                average_returns.append(stats['average_return'])
 
-    # Sort iterations and corresponding returns (just in case)
+    return iterations, average_returns
+
+def plot_average_return(iterations, average_returns):
+    """Plots average return per iteration.
+
+    Args:
+        iterations: list of ints, training iteration numbers.
+        average_returns: list of floats, average returns for each iteration.
+    """
+    # Sort data to ensure proper plotting order
     sorted_data = sorted(zip(iterations, average_returns))
     iterations, average_returns = zip(*sorted_data)
 
@@ -54,4 +68,6 @@ def plot_average_return(logged_data):
 # Example Usage
 log_dir = './experiment5/logs/'  # Replace with the path to your logs
 logged_data = load_logged_data(log_dir)
-plot_average_return(logged_data)
+iterations, average_returns = extract_average_return(logged_data)
+plot_average_return(iterations, average_returns)
+
