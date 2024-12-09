@@ -480,11 +480,12 @@ def run_one_iteration(online_agent, static_agent, environment,
         total_rewards = []
         
         for _ in range(num_evaluation_games):
-            _, total_reward = run_two_player_episode(
+            total_steps, total_reward = run_two_player_episode(
                 online_agent, static_agent, environment, 
                 obs_stacker_online, obs_stacker_static)
             total_rewards.append(total_reward)
         
+
         eval_average_return = np.mean(total_rewards)
         statistics.append({'eval_average_return': eval_average_return})
         tf.logging.info(f'Evaluation: Iteration {iteration} average return: {eval_average_return:.2f}')
@@ -617,9 +618,10 @@ def benchmark_agent(online_agent, static_agent, environment,
         obs_stacker_static.reset_stack()
 
         # Run a single game with the two agents
-        _, total_reward = run_two_player_episode(
+        total_steps, total_reward = run_two_player_episode(
             online_agent, static_agent, environment, 
             obs_stacker_online, obs_stacker_static)
+        print("total steps for this game was", total_steps)
 
         # The reward in Hanabi is shared, so both agents receive the same reward
         online_agent_total_reward += total_reward

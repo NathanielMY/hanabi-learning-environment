@@ -31,7 +31,7 @@ class Runner(object):
     """Initialize runner."""
     self.flags = flags
     self.agent_config = {'players': flags['players']}
-    self.environment = rl_env.make('Hanabi-Full', num_players=flags['players'])
+    self.environment = rl_env.make('Hanabi-Small', num_players=flags['players'])
     self.agent_class = AGENT_CLASSES[flags['agent_class']]
 
   def run(self):
@@ -64,7 +64,7 @@ class Runner(object):
     return rewards
 
 if __name__ == "__main__":
-  flags = {'players': 2, 'num_episodes': 1, 'agent_class': 'SimpleAgent'}
+  flags = {'players': 2, 'num_episodes': 1, 'agent_class': 'RandomAgent'}
   options, arguments = getopt.getopt(sys.argv[1:], '',
                                      ['players=',
                                       'num_episodes=',

@@ -60,6 +60,6 @@ class SimpleAgent(Agent):
 
     # If no card is hintable then discard or play.
     if observation['information_tokens'] < self.max_information_tokens:
-      return {'action_type': 'DISCARD', 'card_index': 0}
-    else:
       return {'action_type': 'PLAY', 'card_index': 0}
+    else:
+      return {'action_type': 'DISCARD', 'card_index': 0}
