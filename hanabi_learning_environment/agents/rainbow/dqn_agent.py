@@ -59,30 +59,61 @@ def linearly_decaying_epsilon(decay_period, step, warmup_steps, epsilon):
   return epsilon + bonus
 
 
+# def dqn_template(state, num_actions, layer_size=512, num_layers=1):
+#   r"""Builds a DQN Network mapping states to Q-values.
+
+#   Args:
+#     state: A `tf.placeholder` for the RL state.
+#     num_actions: int, number of actions that the RL agent can take.
+#     layer_size: int, number of hidden units per layer.
+#     num_layers: int, Number of hidden layers.
+
+#   Returns:
+#     net: A `tf.Graphdef` for DQN:
+#       `\theta : \mathcal{X}\rightarrow\mathbb{R}^{|\mathcal{A}|}`
+#   """
+#   weights_initializer = slim.variance_scaling_initializer(
+#       factor=1.0 / np.sqrt(3.0), mode='FAN_IN', uniform=True)
+
+#   net = tf.cast(state, tf.float32)
+#   net = tf.squeeze(net, axis=2)
+#   for _ in range(num_layers):
+#     net = slim.fully_connected(net, layer_size,
+#                                activation_fn=tf.nn.relu)
+#   net = slim.fully_connected(net, num_actions, activation_fn=None,
+#                              weights_initializer=weights_initializer)
+#   return net
+
 def dqn_template(state, num_actions, layer_size=512, num_layers=1):
-  r"""Builds a DQN Network mapping states to Q-values.
+    """Builds a DQN Network mapping states to Q-values.
 
-  Args:
-    state: A `tf.placeholder` for the RL state.
-    num_actions: int, number of actions that the RL agent can take.
-    layer_size: int, number of hidden units per layer.
-    num_layers: int, Number of hidden layers.
+    Args:
+        state: A `tf.placeholder` for the RL state. Shape [batch_size, obs_size, stack_size].
+        num_actions: int, number of actions the RL agent can take.
+        layer_size: int, number of hidden units per layer.
+        num_layers: int, number of hidden layers.
 
-  Returns:
-    net: A `tf.Graphdef` for DQN:
-      `\theta : \mathcal{X}\rightarrow\mathbb{R}^{|\mathcal{A}|}`
-  """
-  weights_initializer = slim.variance_scaling_initializer(
-      factor=1.0 / np.sqrt(3.0), mode='FAN_IN', uniform=True)
+    Returns:
+        net: A `tf.Graphdef` for DQN mapping states to Q-values.
+    """
+    weights_initializer = slim.variance_scaling_initializer(
+        factor=1.0 / np.sqrt(3.0), mode='FAN_IN', uniform=True
+    )
 
-  net = tf.cast(state, tf.float32)
-  net = tf.squeeze(net, axis=2)
-  for _ in range(num_layers):
-    net = slim.fully_connected(net, layer_size,
-                               activation_fn=tf.nn.relu)
-  net = slim.fully_connected(net, num_actions, activation_fn=None,
-                             weights_initializer=weights_initializer)
-  return net
+    net = tf.cast(state, tf.float32)
+
+    # Reshape input to flatten observation size and stack size into a single dimension
+    net = tf.reshape(net, [-1, int(net.shape[1]) * int(net.shape[2])])
+
+    # Apply fully connected layers
+    for _ in range(num_layers):
+        net = slim.fully_connected(net, layer_size, activation_fn=tf.nn.relu)
+
+    # Final layer outputs Q-values for each action
+    net = slim.fully_connected(
+        net, num_actions, activation_fn=None, weights_initializer=weights_initializer
+    )
+    return net
 
 
 @gin.configurable
