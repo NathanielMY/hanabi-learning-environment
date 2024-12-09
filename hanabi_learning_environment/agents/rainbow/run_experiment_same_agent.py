@@ -27,6 +27,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import copy  # For deep copy of the training agent
 import time
 
 from third_party.dopamine import checkpointer
@@ -112,7 +113,7 @@ def load_gin_configs(gin_files, gin_bindings):
 
 
 @gin.configurable
-def create_environment(game_type='Hanabi-Full', num_players=2):
+def create_environment(game_type='Hanabi-Small', num_players=2):
   """Creates the Hanabi environment.
 
   Args:
@@ -336,104 +337,164 @@ def run_one_episode(agent, environment, obs_stacker):
   return step_number, total_reward
 
 
-def run_one_phase(agent, environment, obs_stacker, min_steps, statistics,
-                  run_mode_str):
-  """Runs the agent/environment loop until a desired number of steps.
+def run_two_player_episode(agent_training, static_agent, environment, obs_stacker_online, obs_stacker_static):
+    # Resets observation stacks and environment.
+    obs_stacker_online.reset_stack()
+    obs_stacker_static.reset_stack()
+    observations = environment.reset()
 
-  Args:
-    agent: Agent playing hanabi.
-    environment: environment object.
-    obs_stacker: Observation stacker object.
-    min_steps: int, minimum number of steps to generate in this phase.
-    statistics: `IterationStatistics` object which records the experimental
-      results.
-    run_mode_str: str, describes the run mode for this agent.
+    current_player, legal_moves, observation_vector = parse_observations(
+        observations, environment.num_moves(),
+        obs_stacker_online if current_player == 0 else obs_stacker_static
+    )
 
-  Returns:
-    The number of steps taken in this phase, the sum of returns, and the
-      number of episodes performed.
-  """
-  step_count = 0
-  num_episodes = 0
-  sum_returns = 0.
+    is_done = False
+    total_reward = 0
+    step_number = 0
+    reward_since_last_action = np.zeros(environment.players)
 
-  while step_count < min_steps:
-    episode_length, episode_return = run_one_episode(agent, environment,
-                                                     obs_stacker)
-    statistics.append({
-        '{}_episode_lengths'.format(run_mode_str): episode_length,
-        '{}_episode_returns'.format(run_mode_str): episode_return
-    })
+    while not is_done:
+        # Select the correct agent and stacker based on the current player.
+        if current_player == 0:
+            # Training agent's turn
+            action = agent_training.step(
+                reward_since_last_action[current_player],
+                current_player,
+                legal_moves,
+                observation_vector
+            ) if step_number > 0 else agent_training.begin_episode(
+                current_player, legal_moves, observation_vector
+            )
+        else:
+            # Static agent's turn
+            action = static_agent.step(
+                reward_since_last_action[current_player],
+                current_player,
+                legal_moves,
+                observation_vector
+            ) if step_number > 0 else static_agent.begin_episode(
+                current_player, legal_moves, observation_vector
+            )
 
-    step_count += episode_length
-    sum_returns += episode_return
-    num_episodes += 1
+        # Environment step
+        observations, reward, is_done, _ = environment.step(action.item())
 
-  return step_count, sum_returns, num_episodes
+        # Update rewards
+        reward_since_last_action[current_player] += reward
+        total_reward += reward
+        step_number += 1
+
+        # Prepare for the next turn if the game is not finished
+        if not is_done:
+            current_player, legal_moves, observation_vector = parse_observations(
+                observations, environment.num_moves(),
+                obs_stacker_online if current_player == 0 else obs_stacker_static
+            )
+
+    # End the episode for both agents
+    agent_training.end_episode(reward_since_last_action)
+    static_agent.end_episode(reward_since_last_action)
+
+    return step_number, total_reward
+
+
+def run_one_phase(online_agent, static_agent, environment, 
+                  obs_stacker_online, obs_stacker_static, 
+                  min_steps, statistics, run_mode_str):
+    """Runs the two-agent game loop until a desired number of steps.
+
+    Args:
+        online_agent: The training agent.
+        static_agent: The fixed opponent agent.
+        environment: The Hanabi environment.
+        obs_stacker_online: Observation stacker for the online agent.
+        obs_stacker_static: Observation stacker for the static agent.
+        min_steps: int, minimum number of steps to generate in this phase.
+        statistics: `IterationStatistics` object to record results.
+        run_mode_str: str, describes the run mode for this phase.
+
+    Returns:
+        step_count: Total steps taken in this phase.
+        sum_returns: Total returns (rewards).
+        num_episodes: Number of episodes completed.
+    """
+    step_count = 0
+    num_episodes = 0
+    sum_returns = 0.0
+
+    while step_count < min_steps:
+        episode_length, episode_return = run_two_player_episode(
+            online_agent, static_agent, environment, obs_stacker_online, obs_stacker_static)
+        
+        statistics.append({
+            f'{run_mode_str}_episode_lengths': episode_length,
+            f'{run_mode_str}_episode_returns': episode_return
+        })
+
+        step_count += episode_length
+        sum_returns += episode_return
+        num_episodes += 1
+
+    return step_count, sum_returns, num_episodes
+
 
 
 @gin.configurable
-def run_one_iteration(agent, environment, obs_stacker,
-                      iteration, training_steps,
-                      evaluate_every_n=100,
-                      num_evaluation_games=100):
-  """Runs one iteration of agent/environment interaction.
+def run_one_iteration(online_agent, static_agent, environment, 
+                      obs_stacker_online, obs_stacker_static, iteration,
+                      training_steps, evaluate_every_n=100, num_evaluation_games=100):
+    """Runs one iteration of agent interaction, including training and evaluation.
 
-  An iteration involves running several episodes until a certain number of
-  steps are obtained.
+    Args:
+        online_agent: The training agent.
+        static_agent: The fixed opponent agent.
+        environment: The Hanabi environment.
+        obs_stacker_online: Observation stacker for the online agent.
+        obs_stacker_static: Observation stacker for the static agent.
+        iteration: int, current iteration number.
+        training_steps: int, number of training steps to perform.
+        evaluate_every_n: int, evaluation frequency.
+        num_evaluation_games: int, number of evaluation games.
 
-  Args:
-    agent: Agent playing hanabi.
-    environment: The Hanabi environment.
-    obs_stacker: Observation stacker object.
-    iteration: int, current iteration number, used as a global_step.
-    training_steps: int, the number of training steps to perform.
-    evaluate_every_n: int, frequency of evaluation.
-    num_evaluation_games: int, number of games per evaluation.
+    Returns:
+        statistics: Summary statistics for the iteration.
+    """
+    start_time = time.time()
+    statistics = iteration_statistics.IterationStatistics()
 
-  Returns:
-    A dict containing summary statistics for this iteration.
-  """
-  start_time = time.time()
+    # Training phase
+    online_agent.eval_mode = False
+    step_count, sum_returns, num_episodes = run_one_phase(
+        online_agent, static_agent, environment, 
+        obs_stacker_online, obs_stacker_static,
+        training_steps, statistics, 'train')
 
-  statistics = iteration_statistics.IterationStatistics()
+    tf.logging.info(f'Training: Iteration {iteration} completed in {time.time() - start_time:.2f} seconds.')
+    average_return = sum_returns / num_episodes
+    statistics.append({'average_training_return': average_return})
 
-  # First perform the training phase, during which the agent learns.
-  agent.eval_mode = False
-  number_steps, sum_returns, num_episodes = (
-      run_one_phase(agent, environment, obs_stacker, training_steps, statistics,
-                    'train'))
-  time_delta = time.time() - start_time
-  tf.logging.info('Average training steps per second: %.2f',
-                  number_steps / time_delta)
+    # Evaluation phase
+    if evaluate_every_n is not None and iteration % evaluate_every_n == 0:
+        tf.logging.info(f'Starting evaluation for iteration {iteration}.')
+        online_agent.eval_mode = True
+        total_rewards = []
+        
+        for _ in range(num_evaluation_games):
+            _, total_reward = run_two_player_episode(
+                online_agent, static_agent, environment, 
+                obs_stacker_online, obs_stacker_static)
+            total_rewards.append(total_reward)
+        
+        eval_average_return = np.mean(total_rewards)
+        statistics.append({'eval_average_return': eval_average_return})
+        tf.logging.info(f'Evaluation: Iteration {iteration} average return: {eval_average_return:.2f}')
+    
+    return statistics
 
-  average_return = sum_returns / num_episodes
-  tf.logging.info('Average per episode return: %.2f', average_return)
-  statistics.append({'average_return': average_return})
 
-  # Also run an evaluation phase if desired.
-  if evaluate_every_n is not None and iteration % evaluate_every_n == 0:
-    episode_data = []
-    agent.eval_mode = True
-    # Collect episode data for all games.
-    for _ in range(num_evaluation_games):
-      episode_data.append(run_one_episode(agent, environment, obs_stacker))
 
-    eval_episode_length, eval_episode_return = map(np.mean, zip(*episode_data))
 
-    statistics.append({
-        'eval_episode_lengths': eval_episode_length,
-        'eval_episode_returns': eval_episode_return
-    })
-    tf.logging.info('Average eval. episode length: %.2f  Return: %.2f',
-                    eval_episode_length, eval_episode_return)
-  else:
-    statistics.append({
-        'eval_episode_lengths': -1,
-        'eval_episode_returns': -1
-    })
 
-  return statistics.data_lists
 
 
 def log_experiment(experiment_logger, iteration, statistics,
@@ -472,39 +533,102 @@ def checkpoint_experiment(experiment_checkpointer, agent, experiment_logger,
       experiment_checkpointer.save_checkpoint(iteration, agent_dictionary)
 
 
-@gin.configurable
-def run_experiment(agent,
-                   environment,
-                   start_iteration,
-                   obs_stacker,
-                   experiment_logger,
-                   experiment_checkpointer,
-                   checkpoint_dir,
-                   num_iterations=200,
-                   training_steps=5000,
-                   logging_file_prefix='log',
-                   log_every_n=1,
-                   checkpoint_every_n=1):
-  """Runs a full experiment, spread over multiple iterations."""
-  tf.logging.info('Beginning training...')
-  if num_iterations <= start_iteration:
-    tf.logging.warning('num_iterations (%d) < start_iteration(%d)',
-                       num_iterations, start_iteration)
-    return
 
-  for iteration in range(start_iteration, num_iterations):
-    start_time = time.time()
-    statistics = run_one_iteration(agent, environment, obs_stacker, iteration,
-                                   training_steps)
-    tf.logging.info('Iteration %d took %d seconds', iteration,
-                    time.time() - start_time)
-    start_time = time.time()
-    log_experiment(experiment_logger, iteration, statistics,
-                   logging_file_prefix, log_every_n)
-    tf.logging.info('Logging iteration %d took %d seconds', iteration,
-                    time.time() - start_time)
-    start_time = time.time()
-    checkpoint_experiment(experiment_checkpointer, agent, experiment_logger,
-                          iteration, checkpoint_dir, checkpoint_every_n)
-    tf.logging.info('Checkpointing iteration %d took %d seconds', iteration,
-                    time.time() - start_time)
+
+
+
+@gin.configurable
+def run_experiment(online_agent, static_agent, environment, 
+                   start_iteration, obs_stacker_online, obs_stacker_static,
+                   experiment_logger, experiment_checkpointer, checkpoint_dir,
+                   num_iterations=200, training_steps=5000, 
+                   logging_file_prefix='log', log_every_n=1, checkpoint_every_n=1,
+                    benchmark_games=50):
+    """Runs a full training experiment with two agents playing Hanabi.
+
+    Args:
+        online_agent: The training agent.
+        static_agent: The fixed opponent agent.
+        environment: The Hanabi environment.
+        start_iteration: int, iteration to start from.
+        obs_stacker_online: Observation stacker for the online agent.
+        obs_stacker_static: Observation stacker for the static agent.
+        experiment_logger: Logger for recording statistics.
+        experiment_checkpointer: Checkpointer for saving progress.
+        checkpoint_dir: Directory to save checkpoints.
+        num_iterations: int, number of training iterations.
+        training_steps: int, training steps per iteration.
+        logging_file_prefix: str, prefix for log files.
+        log_every_n: int, log frequency.
+        checkpoint_every_n: int, checkpoint frequency.
+        static_agent_update_interval: int, interval to update the static agent.
+        benchmark_games: int, number of games for benchmarking.
+
+    Returns:
+        None
+    """
+    tf.logging.info('Starting experiment...')
+    if num_iterations <= start_iteration:
+        tf.logging.warning(f'num_iterations ({num_iterations}) <= start_iteration ({start_iteration}).')
+        return
+
+    for iteration in range(start_iteration, num_iterations):
+        tf.logging.info(f'Iteration {iteration} starting...')
+        statistics = run_one_iteration(
+            online_agent, static_agent, environment, 
+            obs_stacker_online, obs_stacker_static, 
+            iteration, training_steps)
+
+        # Logging and checkpointing
+        log_experiment(experiment_logger, iteration, statistics,
+                       logging_file_prefix, log_every_n)
+        checkpoint_experiment(experiment_checkpointer, online_agent, experiment_logger,
+                              iteration, checkpoint_dir, checkpoint_every_n)
+
+    # Benchmarking trained agent
+    # Benchmarking trained agent
+    tf.logging.info('Benchmarking the trained agent...')
+    benchmark_agent(online_agent, static_agent, environment, 
+                    obs_stacker_online, obs_stacker_static, benchmark_games)
+
+
+
+def benchmark_agent(online_agent, static_agent, environment, 
+                    obs_stacker_online, obs_stacker_static, num_games=50):
+    """Benchmarks two agents by letting them play against each other.
+
+    Args:
+        online_agent: The training agent.
+        static_agent: The fixed opponent agent.
+        environment: The Hanabi environment.
+        obs_stacker_online: Observation stacker for the online agent.
+        obs_stacker_static: Observation stacker for the static agent.
+        num_games: int, number of benchmarking games.
+
+    Returns:
+        None
+    """
+    online_agent_total_reward = 0
+    static_agent_total_reward = 0
+
+    for game_idx in range(num_games):
+        # Reset the stackers for the game
+        obs_stacker_online.reset_stack()
+        obs_stacker_static.reset_stack()
+
+        # Run a single game with the two agents
+        _, total_reward = run_two_player_episode(
+            online_agent, static_agent, environment, 
+            obs_stacker_online, obs_stacker_static)
+
+        # The reward in Hanabi is shared, so both agents receive the same reward
+        online_agent_total_reward += total_reward
+        static_agent_total_reward += total_reward
+
+        tf.logging.info(f'Benchmark Game {game_idx + 1}: Reward = {total_reward}')
+
+    # Compute averages
+    average_reward = online_agent_total_reward / num_games
+    tf.logging.info(f'Benchmarking complete: Average reward over {num_games} games: {average_reward:.2f}')
+    tf.logging.info(f'Total reward for Online Agent: {online_agent_total_reward}')
+    tf.logging.info(f'Total reward for Static Agent: {static_agent_total_reward}')
