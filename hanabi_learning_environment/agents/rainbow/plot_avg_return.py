@@ -70,4 +70,3 @@ log_dir = './experiment5/logs/'  # Replace with the path to your logs
 logged_data = load_logged_data(log_dir)
 iterations, average_returns = extract_average_return(logged_data)
 plot_average_return(iterations, average_returns)
-

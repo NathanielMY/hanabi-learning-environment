@@ -44,6 +44,7 @@ def run_game(game_parameters):
   def print_observation(observation):
     """Print some basic information about an agent observation."""
     print("--- Observation ---")
+    print("FLAG, we are printing the observation vector")
     print(observation)
 
     print("### Information about the observation retrieved separately ###")
@@ -110,4 +111,4 @@ if __name__ == "__main__":
   # Check that the cdef and library were loaded from the standard paths.
   assert pyhanabi.cdef_loaded(), "cdef failed to load"
   assert pyhanabi.lib_loaded(), "lib failed to load"
-  run_game({"players": 3, "random_start_player": True})
+  run_game({"players": 2, "random_start_player": True})
