@@ -121,9 +121,9 @@ class DQNAgent(object):
                stack_size=1,
                target_update_period=500,
                epsilon_fn=linearly_decaying_epsilon,
-               epsilon_train=0.1,
+               epsilon_train=0.02,
                epsilon_eval=0.001,
-               epsilon_decay_period=50000, #to match total trainnig time
+               epsilon_decay_period=10000, #to match total trainnig time
                graph_template=dqn_template,
                tf_device='/cpu:*',
                use_staging=True,
