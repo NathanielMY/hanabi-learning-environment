@@ -541,7 +541,7 @@ def checkpoint_experiment(experiment_checkpointer, agent, experiment_logger,
 def run_experiment(online_agent, static_agent, environment, 
                    start_iteration, obs_stacker_online, obs_stacker_static,
                    experiment_logger, experiment_checkpointer, checkpoint_dir,
-                   num_iterations=5, training_steps=5000, 
+                   num_iterations=100, training_steps=5000, 
                    logging_file_prefix='log', log_every_n=1, checkpoint_every_n=1,
                     benchmark_games=50):
     """Runs a full training experiment with two agents playing Hanabi.

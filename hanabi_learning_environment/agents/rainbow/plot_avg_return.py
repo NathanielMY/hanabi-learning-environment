@@ -33,8 +33,16 @@ def extract_average_return(logged_data):
     """
     iterations = []
     average_returns = []
+    print(logged_data)
 
     for key, stats in logged_data.items():
+        print(f"Key: {key}")
+        if hasattr(stats, 'data_lists'):
+            print("Logged data_lists:", stats.data_lists)
+        else:
+            print(f"No data_lists attribute in {key}")
+        #print(stats)  # This will display the object’s string representation
+        #print(dir(stats))
         # Check if the key corresponds to an iteration (e.g., 'iter0')
         if key.startswith('iter') and isinstance(stats, dict):
             iteration = int(key.replace('iter', ''))
