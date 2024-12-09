@@ -345,7 +345,7 @@ def run_two_player_episode(agent_training, static_agent, environment, obs_stacke
 
     current_player, legal_moves, observation_vector = parse_observations(
         observations, environment.num_moves(),
-        obs_stacker_online if current_player == 0 else obs_stacker_static
+        obs_stacker_online
     )
 
     is_done = False
